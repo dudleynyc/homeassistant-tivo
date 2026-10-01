@@ -4,266 +4,157 @@ Support for the Tivo receivers.
 For more details about this platform, please refer to the documentation at
 https://home-assistant.io/components/media_player.tivo/
 """
-import asyncio
 from calendar import timegm
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import json
 
 # from pytz import timezone
 import logging
-import os.path
-import re
 import socket
-import sys
 import time
-import urllib
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
+from urllib.request import Request, urlopen
 
-from homeassistant import util
 from homeassistant.components.media_player import PLATFORM_SCHEMA, MediaPlayerEntity
 from homeassistant.components.media_player.const import (
-    MEDIA_TYPE_TVSHOW,
-    MEDIA_TYPE_VIDEO,
-    SUPPORT_NEXT_TRACK,
-    SUPPORT_PAUSE,
-    SUPPORT_PLAY,
-    SUPPORT_PLAY_MEDIA,
-    SUPPORT_PREVIOUS_TRACK,
-    SUPPORT_STOP,
-    SUPPORT_TURN_OFF,
-    SUPPORT_TURN_ON,
+    MediaPlayerEntityFeature,
+    MediaPlayerState,
+    MediaType,
 )
 from homeassistant.const import (
     CONF_DEVICE,
     CONF_HOST,
     CONF_NAME,
-    CONF_PASSWORD,
     CONF_PORT,
-    CONF_USERNAME,
-    STATE_OFF,
-    STATE_PLAYING,
-    STATE_STANDBY,
 )
 import homeassistant.helpers.config_validation as cv
 
-# from homeassistant.helpers.event import (track_utc_time_change, track_time_interval)
-from homeassistant.helpers.event import track_time_interval
-from homeassistant.helpers.json import save_json
-from homeassistant.util.json import load_json
-import requests
+from homeassistant.helpers.event import async_track_time_interval
 import voluptuous as vol
-import zeroconf
 
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_NAME = "Tivo Receiver"
-DEFAULT_UNIQUE_ID = None
 DEFAULT_PORT = 31339
 DEFAULT_DEVICE = "0"
 
-CONF_UNIQUE_ID="unique_id"
+CONF_UNIQUE_ID = "unique_id"
+CONF_GRACENOTE_USERNAME = "gracenote_username"
+CONF_GRACENOTE_PASSWORD = "gracenote_password"
+CONF_GRACENOTE_API_KEY = "gracenote_api_key"
+CONF_GRACENOTE_LINEUP_ID = "gracenote_lineup_id"
+CONF_GRACENOTE_POSTAL_CODE = "gracenote_postal_code"
+CONF_GRACENOTE_COUNTRY = "gracenote_country"
+# Retained so existing configurations continue to work.
 CONF_ZAPUSER = "zapuser"
 CONF_ZAPPASS = "zappass"
 CONF_DEBUG = "debug"
 
-SCAN_INTERVAL = timedelta(seconds=10)
-ZAP_SCAN_INTERVAL = timedelta(seconds=300)
+GUIDE_SCAN_INTERVAL = timedelta(minutes=5)
 
 SUPPORT_TIVO = (
-    SUPPORT_PAUSE
-    | SUPPORT_PLAY_MEDIA
-    | SUPPORT_STOP
-    | SUPPORT_NEXT_TRACK
-    | SUPPORT_TURN_ON
-    | SUPPORT_TURN_OFF
-    | SUPPORT_PREVIOUS_TRACK
-    | SUPPORT_PLAY
+    MediaPlayerEntityFeature.PAUSE
+    | MediaPlayerEntityFeature.PLAY_MEDIA
+    | MediaPlayerEntityFeature.STOP
+    | MediaPlayerEntityFeature.NEXT_TRACK
+    | MediaPlayerEntityFeature.TURN_ON
+    | MediaPlayerEntityFeature.TURN_OFF
+    | MediaPlayerEntityFeature.PREVIOUS_TRACK
+    | MediaPlayerEntityFeature.PLAY
 )
 
 DATA_TIVO = "data_tivo"
 
 PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
     {
-        vol.Optional(CONF_HOST): cv.string,
-        vol.Optional(CONF_UNIQUE_ID, default=DEFAULT_UNIQUE_ID): cv.string,
+        vol.Required(CONF_HOST): cv.string,
+        vol.Optional(CONF_UNIQUE_ID): cv.string,
         vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
         vol.Optional(CONF_PORT, default=DEFAULT_PORT): cv.port,
         vol.Optional(CONF_DEVICE, default=DEFAULT_DEVICE): cv.string,
         vol.Optional(CONF_ZAPUSER, default=""): cv.string,
         vol.Optional(CONF_ZAPPASS, default=""): cv.string,
-        vol.Optional(CONF_DEBUG, default=0): cv.string,
+        vol.Optional(CONF_GRACENOTE_USERNAME, default=""): cv.string,
+        vol.Optional(CONF_GRACENOTE_PASSWORD, default=""): cv.string,
+        vol.Optional(CONF_GRACENOTE_API_KEY, default=""): cv.string,
+        vol.Optional(CONF_GRACENOTE_LINEUP_ID, default=""): cv.string,
+        vol.Optional(CONF_GRACENOTE_POSTAL_CODE, default=""): cv.string,
+        vol.Optional(CONF_GRACENOTE_COUNTRY, default=""): cv.string,
+        vol.Optional(CONF_DEBUG, default=False): cv.boolean,
     }
 )
 
 
-def setup_platform(hass, config, add_devices, discovery_info=None):
+async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
     """Set up the Tivo platform."""
     known_devices = hass.data.get(DATA_TIVO)
     if not known_devices:
         known_devices = []
-    hosts = []
-
-    zapuser = config.get(CONF_ZAPUSER)
-    zappass = config.get(CONF_ZAPPASS)
-    zapclient = None
+    guide_username = config.get(CONF_GRACENOTE_USERNAME) or config.get(CONF_ZAPUSER)
+    guide_password = config.get(CONF_GRACENOTE_PASSWORD) or config.get(CONF_ZAPPASS)
+    guide_api_key = config.get(CONF_GRACENOTE_API_KEY)
+    guide_lineup_id = config.get(CONF_GRACENOTE_LINEUP_ID)
+    guide_postal_code = config.get(CONF_GRACENOTE_POSTAL_CODE)
+    guide_country = config.get(CONF_GRACENOTE_COUNTRY)
+    guide_client = None
     debug = config.get(CONF_DEBUG)
 
-    if zapuser and zappass:
-        zapclient = Zap2ItClient(zapuser, zappass, debug)
-
-    if CONF_HOST in config:
-        hosts.append(
-            [
-                config.get(CONF_UNIQUE_ID),
-                config.get(CONF_NAME),
-                config.get(CONF_HOST),
-                config.get(CONF_PORT),
-                config.get(CONF_DEVICE),
-                zapclient,
-                debug,
-            ]
+    if guide_lineup_id or (guide_username and guide_password):
+        guide_client = GracenoteClient(
+            guide_username,
+            guide_password,
+            debug,
+            api_key=guide_api_key,
+            lineup_id=guide_lineup_id,
+            postal_code=guide_postal_code,
+            country=guide_country,
+            local_timezone=hass.config.time_zone,
         )
+        await hass.async_add_executor_job(guide_client.update)
 
-    # Discovery not tested and likely not working
-    else:
-        zc_hosts = find_tivos_zc()
-
-        if len(zc_hosts) != 0:
-            # attempt to discover additional Tivo units
-            device = 0
-            for name, ip_addr in zc_hosts.items():
-                hosts.append(
-                    [name + " TiVo", ip_addr, DEFAULT_PORT, device, zapclient, debug]
-                )
-                device = device + 1
-        else:
-            # bail out and just go forward with uPnP data
-            if DEFAULT_DEVICE not in known_devices:
-                hosts.append(
-                    [name, host, DEFAULT_PORT, DEFAULT_DEVICE, zapclient, debug]
-                )
-
-    tivos = []
-
-    for host in hosts:
-        tivos.append(TivoDevice(*host))
-        known_devices.append(host[-1])
-
-    add_devices(tivos)
+    tivo = TivoDevice(
+        config.get(CONF_UNIQUE_ID),
+        config.get(CONF_NAME),
+        config.get(CONF_HOST),
+        config.get(CONF_PORT),
+        config.get(CONF_DEVICE),
+        guide_client,
+        debug,
+    )
+    known_devices.append(config.get(CONF_HOST))
+    async_add_entities([tivo], True)
     hass.data[DATA_TIVO] = known_devices
 
-    def update_status(event_time):
-        for tivo in tivos:
-            if tivo.debug:
-                _LOGGER.info("update_status: %s", tivo)
-            tivo.get_status()
+    async def gracenote_update(event_time):
+        await hass.async_add_executor_job(guide_client.update)
 
-    def zap2it_update(event_time):
-        zapclient.update()
-
-    track_time_interval(hass, update_status, SCAN_INTERVAL)
-    if zapclient:
-        track_time_interval(hass, zap2it_update, ZAP_SCAN_INTERVAL)
+    if guide_client:
+        async_track_time_interval(hass, gracenote_update, GUIDE_SCAN_INTERVAL)
 
     return True
-
-
-#
-# Taken from https://github.com/wmcbrine/tivoremote.git
-#
-def find_tivos_zc():
-    """Find TiVos on the LAN using Zeroconf. This is simpler and
-    cleaner than the fake HTTP method, but slightly slower, and
-    requires the Zeroconf module. (It's still much faster than
-    waiting for beacons.)
-
-    """
-
-    class ZCListener:
-        def __init__(self, names):
-            self.names = names
-
-        def remove_service(self, server, type, name):
-            self.names.remove(name)
-
-        def add_service(self, server, type, name):
-            self.names.append(name)
-
-    REMOTE = "_tivo-remote._tcp.local."
-
-    tivo_ports = {}
-    tivo_swversions = {}
-
-    tivos = {}
-    tivos_rev = {}
-    tivo_names = []
-
-    # Get the names of TiVos offering network remote control
-    try:
-        serv = zeroconf.Zeroconf()
-        browser = zeroconf.ServiceBrowser(serv, REMOTE, ZCListener(tivo_names))
-    except:
-        return tivos
-
-    # Give them a second to respond
-    time.sleep(1)
-
-    # For proxied TiVos, remove the original
-    for t in tivo_names[:]:
-        if t.startswith("Proxy("):
-            try:
-                t = t.replace("." + REMOTE, "")[6:-1] + "." + REMOTE
-                tivo_names.remove(t)
-            except:
-                pass
-
-    # Now get the addresses -- this is the slow part
-    swversion = re.compile("(\d*.\d*)").findall
-    for t in tivo_names:
-        s = serv.get_service_info(REMOTE, t)
-        if s:
-            name = t.replace("." + REMOTE, "")
-            address = socket.inet_ntoa(s.address)
-            try:
-                version = float(swversion(s.getProperties()["swversion"])[0])
-            except:
-                version = 0.0
-            tivos[name] = address
-            tivos_rev[address] = name
-            tivo_ports[name] = s.port
-            tivo_swversions[name] = version
-
-    # For proxies with numeric names, remove the original
-    for t in tivo_names:
-        if t.startswith("Proxy("):
-            address = t.replace("." + REMOTE, "")[6:-1]
-            if address in tivos_rev:
-                tivos.pop(tivos_rev[address])
-
-    serv.close()
-    return tivos
 
 
 class TivoDevice(MediaPlayerEntity):
     """Representation of a Tivo receiver on the network."""
 
-    def __init__(self, unique_id, name, host, port, device, zapclient, debug):
+    def __init__(self, unique_id, name, host, port, device, guide_client, debug):
         """Initialize the device."""
         self._unique_id = unique_id
         self._name = name
         self._host = host
         self._port = port
 
-        self.zapclient = zapclient
+        self.guide_client = guide_client
 
         self._is_standby = False
         self._current = {}
         self._ignore = {}
         self.sock = None
 
-        debug = bool(int(debug))
         self.debug = debug
 
+    def update(self):
+        """Fetch the current state without blocking Home Assistant's event loop."""
         self.get_status()
 
     def connect(self, host, port):
@@ -305,41 +196,43 @@ class TivoDevice(MediaPlayerEntity):
         # returns no image
         self._current[
             "image"
-        ] = "https://tvlistings.zap2it.com/assets/images/noImage165x220.jpg"
+        ] = "https://tvlistings.gracenote.com/assets/images/noImage165x220.jpg"
 
         # Sometimes tivo returns 'no_channel Video' from a status request.
         if words[0] == "no_channel" or len(words) < 3:
             return
 
-        if words[0] == "CH_STATUS":
-            # subchannel?
-            if len(words) == 4:
-                channel = words[1].lstrip("0") + "." + words[2].lstrip("0")
-                channel = channel.zfill(4)
-                status = words[3]
-            else:
-                channel = words[1].lstrip("0")
-                channel = channel.zfill(4)
-                status = words[2]
+        if words[0] != "CH_STATUS":
+            return
 
-            self._current["channel"] = channel
-            self._current["title"] = "Ch. {}".format(channel)
-            self._current["status"] = status
-            self._current["mode"] = "TV"
+        # subchannel?
+        if len(words) == 4:
+            channel = words[1].lstrip("0") + "." + words[2].lstrip("0")
+            channel = channel.zfill(4)
+            status = words[3]
+        else:
+            channel = words[1].lstrip("0")
+            channel = channel.zfill(4)
+            status = words[2]
 
-        if self.zapclient:
-            zap_ch = channel.replace("-", ".")  # maybe not needed
-            ch = self.zapclient.get_callsign(zap_ch)
+        self._current["channel"] = channel
+        self._current["title"] = "Ch. {}".format(channel)
+        self._current["status"] = status
+        self._current["mode"] = "TV"
+
+        if self.guide_client:
+            guide_ch = channel.replace("-", ".")
+            ch = self.guide_client.get_callsign(guide_ch) or channel
             self._current["channel"] = ch
-            num = zap_ch.lstrip("0")
-            ti = self.zapclient.get_title(zap_ch)
+            num = guide_ch.lstrip("0")
+            ti = self.guide_client.get_title(guide_ch) or "Unknown program"
             if self.debug:
                 _LOGGER.info("Channel:  %s", num)
                 _LOGGER.info("Callsign: %s", ch)
                 _LOGGER.info("Title:    %s", ti)
 
             self._current["title"] = "Ch. {} {}: {}".format(num, ch, ti)
-            self._current["image"] = self.zapclient.get_image_url(zap_ch)
+            self._current["image"] = self.guide_client.get_image_url(guide_ch)
 
         self._is_standby = False
 
@@ -400,9 +293,9 @@ class TivoDevice(MediaPlayerEntity):
     def state(self):
         """Return the state of the device."""
         if self._is_standby:
-            return STATE_STANDBY
+            return MediaPlayerState.OFF
         # Haven't determined a way to see if the content is paused
-        return STATE_PLAYING
+        return MediaPlayerState.PLAYING
 
     @property
     def show_live(self):
@@ -506,21 +399,6 @@ class TivoDevice(MediaPlayerEntity):
         return ""
 
     @property
-    def support_ch_dn(self):
-        """Boolean if channel down command supported."""
-        return bool(self.supported_features & SUPPORT_CHANNEL_STEP)
-
-    @property
-    def support_ch_up(self):
-        """Boolean if channel up command supported."""
-        return bool(self.supported_features & SUPPORT_CHANNEL_STEP)
-
-    #    @property
-    #    def support_ch_buttons(self):
-    #        """Boolean if channel buttons supported."""
-    #        return bool(self.supported_features & SUPPORT_CH_BUTTONS)
-
-    @property
     def supported_features(self):
         """Flag media player features that are supported."""
         return SUPPORT_TIVO
@@ -532,8 +410,8 @@ class TivoDevice(MediaPlayerEntity):
             return
 
         if "episodeTitle" in self._current:
-            return MEDIA_TYPE_TVSHOW
-        return MEDIA_TYPE_VIDEO
+            return MediaType.TVSHOW
+        return MediaType.VIDEO
 
     @property
     def media_channel(self):
@@ -614,17 +492,44 @@ class TivoDevice(MediaPlayerEntity):
         self.get_status()
 
 
-class Zap2ItClient:
-    def __init__(self, zapuser, zappass, debug=False):
-        self._zapuser = zapuser
-        self._zappass = zappass
+class GracenoteClient:
+    """Client for the Gracenote TV listings service that replaced Zap2it."""
+
+    BASE_URL = "https://tvlistings.gracenote.com/"
+    API_URL = "https://data.tmsapi.com/v1.1/"
+    IMAGE_URL = "https://zap2it.tmsimg.com/"
+    NO_IMAGE_URL = (
+        "https://tvlistings.gracenote.com/assets/images/noImage165x220.jpg"
+    )
+    USER_AGENT = (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/140.0 Safari/537.36"
+    )
+
+    def __init__(
+        self,
+        username,
+        password,
+        debug=False,
+        *,
+        api_key="",
+        lineup_id="",
+        postal_code="",
+        country="",
+        local_timezone="UTC",
+    ):
+        self._username = username
+        self._password = password
+        self._api_key = api_key
+        self._api_lineup_id = lineup_id
+        self._postal_code = postal_code
+        self._configured_country = country
+        self._local_timezone = local_timezone
         self.debug = debug
 
         self._channels = {}
         self._titles = {}
         self._images = {}
-
-        self.update()
 
     def get_callsign(self, ch):
         return self._channels.get(ch)
@@ -636,106 +541,184 @@ class Zap2ItClient:
         return self._images.get(ch)
 
     def update(self):
-        self.get_data()
+        if self._api_key and self._api_lineup_id:
+            self.get_api_data()
+        elif self._api_lineup_id:
+            self.get_public_data()
+        else:
+            self.get_data()
+
+    def get_public_data(self):
+        """Fetch guide data from Gracenote's public listings grid."""
+        country = self._configured_country or self._api_lineup_id.split("-", 1)[0]
+        lineup_parts = self._api_lineup_id.split("-")
+        headend_id = lineup_parts[1] if len(lineup_parts) > 1 else self._api_lineup_id
+        if "OTA" in self._api_lineup_id:
+            headend_id = "lineupId"
+        params = urlencode(
+            {
+                "lineupId": self._api_lineup_id,
+                "timespan": "1",
+                "headendId": headend_id,
+                "country": country,
+                "timezone": self._local_timezone,
+                "postalCode": self._postal_code,
+                "isOverride": "true",
+                "pref": "-",
+                "aid": "orbebb",
+                "languagecode": "en-us",
+                "time": str(int(time.time())),
+                "device": "X",
+                "userId": "-",
+            }
+        )
+        url = f"{self.BASE_URL}api/grid?{params}"
+        request = Request(url, headers={"User-Agent": self.USER_AGENT}, method="GET")
+        try:
+            with urlopen(request, timeout=10) as response:
+                self._zapraw = json.loads(response.read().decode("utf8"))
+        except Exception as err:
+            _LOGGER.warning("Unable to download public Gracenote listings: %s", err)
+            return
+        self.get_channels()
+        self.get_titles()
+
+    def get_api_data(self):
+        """Fetch guide data using Gracenote's supported Video API."""
+        start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        params = urlencode(
+            {
+                "startDateTime": start.strftime("%Y-%m-%dT%H:%MZ"),
+                "endDateTime": (start + timedelta(hours=1)).strftime(
+                    "%Y-%m-%dT%H:%MZ"
+                ),
+                "size": "Basic",
+                "imageSize": "Sm",
+                "api_key": self._api_key,
+            }
+        )
+        url = (
+            f"{self.API_URL}lineups/{quote(self._api_lineup_id, safe='')}/grid?"
+            f"{params}"
+        )
+        try:
+            with urlopen(Request(url, method="GET"), timeout=10) as response:
+                grid = json.loads(response.read().decode("utf8"))
+        except Exception as err:
+            _LOGGER.warning("Unable to download Gracenote API listings: %s", err)
+            return
+
+        # Normalize the supported API response to the shape used by the old
+        # consumer grid so channel/title lookup stays in one place.
+        channels = []
+        for station in grid:
+            events = []
+            for airing in station.get("airings", []):
+                event = dict(airing)
+                image = airing.get("program", {}).get("preferredImage", {}).get("uri")
+                event["thumbnail"] = image or ""
+                events.append(event)
+            channels.append(
+                {
+                    "channelNo": station.get("channel", ""),
+                    "callSign": station.get("callSign", ""),
+                    "events": events,
+                }
+            )
+        self._zapraw = {"channels": channels}
+        self.get_channels()
+        self.get_titles()
 
     def login(self):
         # Login and fetch a token
-        host = "https://tvlistings.zap2it.com/"
+        host = self.BASE_URL
         loginpath = "api/user/login"
-        favpath = "api/user/favorites"
         login = host + loginpath
 
         tosend = {
-            "emailid": self._zapuser,
-            "password": self._zappass,
+            "emailid": self._username,
+            "password": self._password,
             "usertype": "0",
             "facebookuser": "false",
         }
         tosend_json = json.dumps(tosend).encode("utf8")
         header = {"content-type": "application/json"}
 
-        req = urllib.request.Request(
-            url=login, data=tosend_json, headers=header, method="POST"
-        )
+        req = Request(url=login, data=tosend_json, headers=header, method="POST")
 
         try:
-            res = urllib.request.urlopen(req, timeout=5)
+            with urlopen(req, timeout=5) as res:
+                rawrtrn = res.read().decode("utf8")
+        except Exception as err:
+            _LOGGER.warning("Unable to log in to Gracenote: %s", err)
+            return False
 
-            rawrtrn = res.read().decode("utf8")
-        except Exception:
-            return
-
-        rtrn = json.loads(rawrtrn)
-
-        self._token = rtrn["token"]
+        try:
+            result = json.loads(rawrtrn)
+            self._token = result["token"]
+            properties = result["properties"]
+            self._zipcode = properties["2002"]
+            self._country = properties["2003"]
+            self._lineupId, self._device = properties["2004"].split(":", 1)
+        except (KeyError, ValueError, json.JSONDecodeError) as err:
+            _LOGGER.warning("Invalid Gracenote login response: %s", err)
+            return False
         if self.debug:
-            _LOGGER.debug("Zap token: %s", self._token)
-        self._zapprops = rtrn["properties"]
-
-        self._zipcode = self._zapprops["2002"]
-        self._country = self._zapprops["2003"]
-        (self._lineupId, self._device) = self._zapprops["2004"].split(":")
+            _LOGGER.debug("Received Gracenote login token")
+        return True
 
     def get_data(self):
         if self.debug:
-            _LOGGER.debug("zapget_data called")
-        self.login()
+            _LOGGER.debug("Gracenote get_data called")
+        if not self.login():
+            return
         now = int(time.time())
-        self._channels = {}
-        zap_params = self.get_zap_params()
-        host = "https://tvlistings.zap2it.com/"
+        guide_params = self.get_guide_params()
+        host = self.BASE_URL
 
         # Only get 1 hour of programming since we only need/want the current program titles
-        # param = '?time=' + str(now) + '&timespan=0&pref=-&' + urlencode(zap_params) + '&TMSID=&FromPage=TV%20Grid&ActivityID=1&OVDID=&isOverride=true'
         param = (
             "?time="
             + str(now)
             + "&timespan=1&pref=-&"
-            + urlencode(zap_params)
+            + urlencode(guide_params)
             + "&TMSID=&FromPage=TV%20Grid&ActivityID=1&OVDID=&isOverride=true"
         )
         url = host + "api/grid" + param
         if self.debug:
-            _LOGGER.debug("Zapget url: %s", url)
+            _LOGGER.debug("Gracenote grid URL: %s", url)
 
         header = {"X-Requested-With": "XMLHttpRequest"}
 
-        req = urllib.request.Request(url=url, headers=header, method="GET")
+        req = Request(url=url, headers=header, method="GET")
 
         try:
-            res = urllib.request.urlopen(req, timeout=5)
-        except:
-            _LOGGER.warn(f"Unable to download Zap2It listings")
-
-        try:
-            self._raw = res.read().decode("utf8")
+            with urlopen(req, timeout=5) as res:
+                self._raw = res.read().decode("utf8")
             self._zapraw = json.loads(self._raw)
-        except Exception:
+        except Exception as err:
+            _LOGGER.warning("Unable to download Gracenote listings: %s", err)
             return
 
-        # self._zapraw = json.loads(res.read().decode('utf8'))
-
         if self.debug:
-            f = open("/tmp/zapraw", "w")
-            f.write(self._raw)
-            f.close()
+            _LOGGER.debug("Downloaded %d bytes of Gracenote guide data", len(self._raw))
 
         self.get_channels()
         self.get_titles()
 
     def get_channels(self):
-        # Decode basic channel num to channel name from zap raw data
+        # Decode basic channel number to channel name from Gracenote data.
         if self.debug:
-            _LOGGER.info("zapget_channels called")
+            _LOGGER.info("Gracenote get_channels called")
         for channelData in self._zapraw["channels"]:
             # Pad channel numbers to 4 chars to match values from Tivo device
             _ch = channelData["channelNo"].zfill(4)
             self._channels[_ch] = channelData["callSign"]
 
     def get_titles(self):
-        # Decode program titles from zap raw data
+        # Decode program titles from Gracenote data.
         if self.debug:
-            _LOGGER.info("zapget_titles called")
+            _LOGGER.info("Gracenote get_titles called")
         self._titles = {}
         self._images = {}
         # self._start  = {}
@@ -764,65 +747,39 @@ class Zap2ItClient:
             #
             #            pgmtime = ' (' + starthm + ' - ' + endhm + ')'
 
-            try:
-                if tmp["thumbnail"] != "":
-                    image = (
-                        "https://zap2it.tmsimg.com/assets/" + tmp["thumbnail"] + ".jpg"
-                    )
-                else:
-                    image = (
-                        "https://tvlistings.zap2it.com/assets/images/noImage165x220.jpg"
-                    )
-            except:
-                image = "https://tvlistings.zap2it.com/assets/images/noImage165x220.jpg"
+            image = self.image_url(tmp.get("thumbnail"))
             self._images[_ch] = image
 
             now = int(time.time())
             if start_time < now < end_time:
                 title = prog["title"]
                 self._titles[_ch] = title
-                try:
-                    if tmp["thumbnail"] != "":
-                        image = (
-                            "https://zap2it.tmsimg.com/assets/"
-                            + tmp["thumbnail"]
-                            + ".jpg"
-                        )
-                    else:
-                        image = "https://tvlistings.zap2it.com/assets/images/noImage165x220.jpg"
-                except:
-                    image = (
-                        "https://tvlistings.zap2it.com/assets/images/noImage165x220.jpg"
-                    )
                 self._images[_ch] = image
                 # + pgmtime
 
-    def get_zap_params(self):
+    def image_url(self, image):
+        """Return an absolute HTTPS URL for either Gracenote response format."""
+        if not image:
+            return self.NO_IMAGE_URL
+        if image.startswith("http://"):
+            return "https://" + image.removeprefix("http://")
+        if image.startswith("https://"):
+            return image
+        if "/" in image or image.endswith((".jpg", ".jpeg", ".png")):
+            return self.IMAGE_URL + image.lstrip("/")
+        return self.IMAGE_URL + "assets/" + image + ".jpg"
+
+    def get_guide_params(self):
         zparams = {}
 
         self._postalcode = self._zipcode
-        country = "USA"
-        device = "X"
-
-        if re.match("[A-z]", self._zipcode):
-            country = "CAN"
-
-            print("testing zlineupid: %s\n" % zlineupId)
-            if re.match(":", zlineupId):
-                (lineupId, device) = zlineupId.split(":")
-            else:
-                lineupId = zlineupId
-                device = "-"
-
-            zparams["postalCode"] = self._postalcode
-        else:
-            zparams["token"] = self._token
+        zparams["token"] = self._token
 
         zparams["lineupId"] = self._country + "-" + self._lineupId + "-DEFAULT"
         zparams["headendId"] = self._lineupId
-        zparams["device"] = device
+        zparams["device"] = self._device or "X"
         zparams["postalCode"] = self._postalcode
         zparams["country"] = self._country
-        zparams["aid"] = "gapzap"
+        zparams["aid"] = "orbebb"
 
         return zparams
