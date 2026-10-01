@@ -149,6 +149,7 @@ class TivoDevice(MediaPlayerEntity):
 
         self.guide_client = guide_client
 
+        self._available = True
         self._is_standby = False
         self._playback_state = MediaPlayerState.PLAYING
         self._current = {}
@@ -184,11 +185,14 @@ class TivoDevice(MediaPlayerEntity):
         """ e.g. CH_STATUS 0645 RECORDING """
 
         words = data.split()
+        if words and words[0] == "INVALID":
+            self._available = False
+            return
+
+        self._available = True
         self.set_status(words)
 
     def set_status(self, words):
-        self._is_standby = True
-
         if not words:
             _LOGGER.debug("device did not respond correctly...")
             return
@@ -202,8 +206,13 @@ class TivoDevice(MediaPlayerEntity):
             "image"
         ] = "https://tvlistings.gracenote.com/assets/images/noImage165x220.jpg"
 
-        # Sometimes tivo returns 'no_channel Video' from a status request.
+        # A TiVo does not send CH_STATUS while playing recorded content or
+        # showing some menus. It is still online, so preserve its prior power
+        # and playback state instead of incorrectly marking it as off.
         if words[0] == "no_channel" or len(words) < 3:
+            self._current["title"] = "TiVo playback"
+            self._current["status"] = "Video"
+            self._current["mode"] = "VIDEO"
             return
 
         if words[0] != "CH_STATUS":
@@ -286,6 +295,11 @@ class TivoDevice(MediaPlayerEntity):
     def unique_id(self):
         """Return a unique ID."""
         return self._unique_id
+
+    @property
+    def available(self):
+        """Return whether the TiVo accepted a network connection."""
+        return self._available
 
     # MediaPlayerEntity properties and methods
     @property
