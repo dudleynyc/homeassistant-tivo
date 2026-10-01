@@ -1,5 +1,5 @@
 # homeassistant-tivo
-Tivo component for Home Assistant (updated for Homeassistant 0.92.X)
+TiVo media-player platform for current Home Assistant releases.
 
 Based on ideas from the following sites:
 
@@ -16,7 +16,7 @@ Working functions:
 2. Power buttons
 3. FWD and REV
 4. PLAY and PAUSE
-5. Retrieval of program title and image info using zap2it - must use your own account information
+5. Retrieval of the current program title and image from Gracenote TV Listings
 ```
 
 Available but not integrated into gui, etc:
@@ -39,33 +39,30 @@ media_player:
     port: 31339
     device: 0
     debug: 0
-#    zapuser: your_zaptoit_email_login
-#    zappass: !secret zap2it_pass
+#    gracenote_lineup_id: USA-OTA90210-DEFAULT  # example; replace with yours
+#    gracenote_postal_code: "90210"
+#    gracenote_country: USA
 ```
-1. Set debug to 1 for additional logging
-2. Do not add zapuser/zappass to configuration.yaml unless you have a valid Zap2iT account.
-Add your zap2it password into secrets.yaml - note that our example does not encode the password, which you can change:
+1. Set `debug: true` for additional logging.
+2. Omit the Gracenote settings if you do not want guide metadata. The default
+   guide path uses Gracenote's public listings grid and does not require an API
+   license. Open `https://tvlistings.gracenote.com/grid-affiliates.html?aid=orbebb`,
+   select your location and provider, and copy the `lineupId` from the grid URL.
+3. If you already have a licensed Gracenote Video API key, add
+   `gracenote_api_key`; the integration will then use the supported API instead.
+4. Consumer-site credentials can still be supplied as `gracenote_username` and
+   `gracenote_password`. Existing `zapuser` and `zappass` keys remain accepted
+   for compatibility, but the direct public-grid configuration is preferred.
 
-```
-zap2it_pass: whateverYouChose
-```
-
-You can also let the tivo component use zeroconf configuration to find and construct your TiVo entities.  Just remove the `host` key.  In this case, the configuration would look like:
-
-```
-media_player:
-  - platform: tivo
-#    zapuser: your_zaptoit_email_login
-#    zappass: !secret zap2it_pass
-```
-
-The entity names will be the name of the TiVo unit with the string `_tivo` added to the end.  You can customize the entity names in the `customization.yaml` file.  If you need to change the TiVo port for a specific unit, you can't use the zeroconf configuration.
+`host` is required. The repository's old Zeroconf path was incomplete and used
+an API that is no longer compatible with current `python-zeroconf`.
 
 This works by opening a socket connection to the Tivo device on its default port 31339.  Then using the following protocol, it can perform several commands:
 
 https://www.tivo.com/assets/images/abouttivo/resources/downloads/brochures/TiVo_TCP_Network_Remote_Control_Protocol.pdf
 
-Then it reads the response and should try to parse that information to determine status.  Simply connecting without sending a command, as we do in __init__, responds with status such as:
+It reads the response and parses that information to determine status. Simply
+connecting without sending a command responds with status such as:
 
 ```
 CH_STATUS 0613 LOCAL
@@ -90,4 +87,3 @@ Issues:
 ```
 
 More to come...
-

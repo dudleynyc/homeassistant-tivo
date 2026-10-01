@@ -1,9 +1,10 @@
 {
   "domain": "tivo",
   "name": "Tivo",
-  "documentation": "https://github.com/groupwhere/homeassistant-tivo/blob/0.88.1/README.md",
-  "dependencies": ["zeroconf"],
+  "documentation": "https://github.com/dudleynyc/homeassistant-tivo/blob/master/README.md",
+  "dependencies": [],
   "codeowners": [],
   "requirements": [],
-  "version": "0.88.1"
+  "iot_class": "local_polling",
+  "version": "1.0.0"
 }
