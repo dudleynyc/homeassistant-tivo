@@ -139,7 +139,10 @@ class TivoDevice(MediaPlayerEntity):
 
     def __init__(self, unique_id, name, host, port, device, guide_client, debug):
         """Initialize the device."""
-        self._unique_id = unique_id
+        # Home Assistant requires a unique ID before an entity can be managed
+        # from the UI. Keep an explicitly configured ID, but provide a stable
+        # fallback for existing YAML configurations.
+        self._unique_id = unique_id or f"tivo_{host}"
         self._name = name
         self._host = host
         self._port = port
@@ -147,6 +150,7 @@ class TivoDevice(MediaPlayerEntity):
         self.guide_client = guide_client
 
         self._is_standby = False
+        self._playback_state = MediaPlayerState.PLAYING
         self._current = {}
         self._ignore = {}
         self.sock = None
@@ -294,8 +298,7 @@ class TivoDevice(MediaPlayerEntity):
         """Return the state of the device."""
         if self._is_standby:
             return MediaPlayerState.OFF
-        # Haven't determined a way to see if the content is paused
-        return MediaPlayerState.PLAYING
+        return self._playback_state
 
     @property
     def show_live(self):
@@ -426,6 +429,7 @@ class TivoDevice(MediaPlayerEntity):
         if self._is_standby:
             self.send_code("STANDBY", "IRCODE")
             self._is_standby = False
+            self._playback_state = MediaPlayerState.PLAYING
 
     def turn_off(self):
         """Turn off the receiver. """
@@ -440,6 +444,8 @@ class TivoDevice(MediaPlayerEntity):
             return
 
         self.send_code("PLAY")
+        self._playback_state = MediaPlayerState.PLAYING
+        self.schedule_update_ha_state()
 
     def media_pause(self):
         """Send pause command."""
@@ -447,6 +453,10 @@ class TivoDevice(MediaPlayerEntity):
             return None
 
         self.send_code("PAUSE", "IRCODE", 0, 0)
+        # TiVo's network remote protocol does not report pause status in its
+        # CH_STATUS response, so retain the state of commands sent through HA.
+        self._playback_state = MediaPlayerState.PAUSED
+        self.schedule_update_ha_state()
 
     def media_stop(self):
         """Send stop command. """
