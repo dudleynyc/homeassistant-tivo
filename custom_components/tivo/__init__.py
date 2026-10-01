@@ -5,7 +5,7 @@ For more details about this platform, please refer to the documentation at
 https://home-assistant.io/components/tivo/
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 # Preload the YAML platform while Home Assistant imports the integration in its
 # import executor. Loading it later on the event loop triggers the blocking
