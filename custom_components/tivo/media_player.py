@@ -202,7 +202,7 @@ class TivoDevice(MediaPlayerEntity):
                     _LOGGER.debug("Listening for status from %s", self._name)
 
                 while True:
-                    raw_status = await reader.readuntil(b"\\r")
+                    raw_status = await reader.readuntil(b"\r")
                     status = raw_status.decode(errors="replace").strip()
                     if not status:
                         continue
