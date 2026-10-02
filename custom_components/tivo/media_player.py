@@ -151,7 +151,11 @@ class TivoDevice(MediaPlayerEntity):
 
         self._available = True
         self._is_standby = False
-        self._playback_state = MediaPlayerState.PLAYING
+        # The TCP remote protocol does not expose a general playback-status
+        # query. Start in Home Assistant's explicit "on, state unknown" state
+        # until the TiVo reports a live-TV channel or HA sends a playback
+        # command.
+        self._playback_state = MediaPlayerState.ON
         self._current = {}
         self._ignore = {}
         self.sock = None
@@ -207,12 +211,13 @@ class TivoDevice(MediaPlayerEntity):
         ] = "https://tvlistings.gracenote.com/assets/images/noImage165x220.jpg"
 
         # A TiVo does not send CH_STATUS while playing recorded content or
-        # showing some menus. It is still online, so preserve its prior power
-        # and playback state instead of incorrectly marking it as off.
+        # showing some menus. A successful connection only proves that it is
+        # online; it does not prove that media is playing or that it is idle.
         if words[0] == "no_channel" or len(words) < 3:
-            self._current["title"] = "TiVo playback"
-            self._current["status"] = "Video"
-            self._current["mode"] = "VIDEO"
+            self._current["title"] = "TiVo state unavailable"
+            self._current["status"] = "Unknown"
+            self._current["mode"] = "UNKNOWN"
+            self._playback_state = MediaPlayerState.ON
             return
 
         if words[0] != "CH_STATUS":
@@ -232,6 +237,7 @@ class TivoDevice(MediaPlayerEntity):
         self._current["title"] = "Ch. {}".format(channel)
         self._current["status"] = status
         self._current["mode"] = "TV"
+        self._playback_state = MediaPlayerState.PLAYING
 
         if self.guide_client:
             guide_ch = channel.replace("-", ".")
@@ -447,7 +453,7 @@ class TivoDevice(MediaPlayerEntity):
         if self._is_standby:
             self.send_code("STANDBY", "IRCODE")
             self._is_standby = False
-            self._playback_state = MediaPlayerState.PLAYING
+            self._playback_state = MediaPlayerState.ON
 
     def turn_off(self):
         """Turn off the receiver. """
