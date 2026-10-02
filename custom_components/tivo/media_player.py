@@ -181,7 +181,12 @@ class TivoDevice(MediaPlayerEntity):
     async def async_added_to_hass(self):
         """Start listening for TiVo channel-status broadcasts."""
         await super().async_added_to_hass()
-        listener_task = self.hass.async_create_task(self._async_status_listener())
+        # This listener is intentionally long-lived. Register it as a
+        # background task so Home Assistant does not wait for it to finish
+        # before completing startup.
+        listener_task = self.hass.async_create_background_task(
+            self._async_status_listener(), f"TiVo status listener: {self._name}"
+        )
         self.async_on_remove(listener_task.cancel)
 
     async def _async_status_listener(self):
