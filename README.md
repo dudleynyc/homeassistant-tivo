@@ -182,9 +182,12 @@ opening the provider lookup URL above.
 
 ## Protocol and acknowledgements
 
-The integration connects locally on TCP port `31339` and uses the [TiVo TCP
-Network Remote Control
-Protocol](https://www.tivo.com/assets/images/abouttivo/resources/downloads/brochures/TiVo_TCP_Network_Remote_Control_Protocol.pdf).
+The integration connects locally on TCP port `31339` and implements TiVo TCP
+Remote Protocol version 1.1. TiVo's original download is no longer available,
+but a [reader-hosted copy is available on
+Yumpu](https://www.yumpu.com/en/document/view/42026982/tcp-remote-protocol-version-11-tivo).
+The PDF is not bundled with this repository because its copyright notice
+prohibits reproduction without written permission.
 
 It builds on work and discussion from:
 
