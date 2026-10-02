@@ -521,7 +521,7 @@ class GracenoteClient:
 
     BASE_URL = "https://tvlistings.gracenote.com/"
     API_URL = "https://data.tmsapi.com/v1.1/"
-    IMAGE_URL = "https://zap2it.tmsimg.com/"
+    IMAGE_URL = "https://zpmc.tmsimg.com/"
     NO_IMAGE_URL = (
         "https://tvlistings.gracenote.com/assets/images/noImage165x220.jpg"
     )
@@ -785,13 +785,15 @@ class GracenoteClient:
         """Return an absolute HTTPS URL for either Gracenote response format."""
         if not image:
             return self.NO_IMAGE_URL
+        if image.startswith("//"):
+            return "https:" + image
         if image.startswith("http://"):
             return "https://" + image.removeprefix("http://")
         if image.startswith("https://"):
             return image
         if "/" in image or image.endswith((".jpg", ".jpeg", ".png")):
             return self.IMAGE_URL + image.lstrip("/")
-        return self.IMAGE_URL + "assets/" + image + ".jpg"
+        return self.IMAGE_URL + "assets/" + image + ".jpg?w=360&h=480"
 
     def get_guide_params(self):
         zparams = {}
