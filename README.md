@@ -1,89 +1,198 @@
-# homeassistant-tivo
-TiVo media-player platform for current Home Assistant releases.
+# TiVo for Home Assistant
 
-Based on ideas from the following sites:
+A custom Home Assistant media-player integration for controlling TiVo DVRs and
+TiVo Mini boxes over the local network. It can also add current-program titles
+and artwork using Gracenote TV Listings.
 
-```
-https://community.home-assistant.io/t/control-tivo-box-over-telnet/12430/65
-https://www.tivocommunity.com/community/index.php?threads/tivo-ui-control-via-telnet-no-hacking-required.392385/
-https://community.home-assistant.io/t/tivo-media-player-component/851
-https://charliemeyer.net/2012/12/04/remote-control-of-a-tivo-from-the-linux-command-line/
+This is a legacy YAML platform modernized for current Home Assistant and Python
+releases. It is not an official Home Assistant or TiVo integration.
+
+## Features
+
+- Power, play, pause, and stop controls
+- Channel up and down while watching Live TV
+- Fast-forward and rewind during recorded playback
+- Current channel, callsign, and program title
+- Current-program artwork with the channel logo as a fallback
+- TiVo DVR and TiVo Mini support through the TiVo network remote-control
+  protocol
+- Public Gracenote guide lookup without a paid API license
+
+Home Assistant's standard media-player card does not have separate channel and
+fast-forward/rewind buttons. The previous and next buttons are therefore
+context-sensitive:
+
+- Live TV: previous/next changes the channel down/up.
+- Recorded playback: previous/next sends rewind/fast-forward.
+
+## Before installing
+
+Enable **Network Remote Control** on every TiVo you want to add. The exact menu
+path varies by TiVo Experience version, but it is normally under **Settings >
+Remote & Devices** or **Settings > Remote, CableCARD & Devices**.
+
+Each TiVo needs its own IP address or resolvable hostname in the configuration.
+The integration does not discover devices through Bonjour. A DHCP reservation
+is recommended so each address remains stable.
+
+This integration works with TiVo DVRs and TiVo Mini, Mini VOX, and Mini LUX
+boxes that support TiVo's network remote-control protocol. It does not support
+the Android-based TiVo Stream 4K.
+
+## Install with HACS
+
+This repository is not in the default HACS catalog, so add it as a custom
+repository:
+
+1. Open **HACS > Integrations** in Home Assistant.
+2. Open the menu in the upper-right corner and choose **Custom repositories**.
+3. Enter `https://github.com/dudleynyc/homeassistant-tivo`.
+4. Select **Integration** as the category and add the repository.
+5. Find **TiVo**, choose **Download**, and restart Home Assistant.
+
+To install an update later, download the new version from HACS and restart Home
+Assistant again.
+
+## Manual installation
+
+Copy `custom_components/tivo` from this repository into your Home Assistant
+configuration directory so the files are located at:
+
+```text
+CONFIG_DIR/custom_components/tivo/
 ```
 
-Working functions:
-```
-1. Channel up and down - uses previous and next track buttons
-2. Power buttons
-3. FWD and REV
-4. PLAY and PAUSE
-5. Retrieval of the current program title and image from Gracenote TV Listings
-```
+Restart Home Assistant after copying or updating the files.
 
-Available but not integrated into gui, etc:
-```
-1. Open guide, tivo menu, live tv, now playing
-```
+## Configure a TiVo
 
-Copy the tivo folder to your CONFIG_DIR/custom_components/ directory.  This should now look like:
-```
-CONFIG_DIR/custom_components/tivo/media_player.py
-```
+Add one entry to `configuration.yaml` for each TiVo:
 
-It requires the following configuration:
-
-```
+```yaml
 media_player:
   - platform: tivo
-    host: 192.168.0.22
-    name: Tivo
+    host: 192.168.1.101
+    name: Living Room TiVo
+    unique_id: living_room_tivo
     port: 31339
-    device: 0
-    debug: 0
-#    gracenote_lineup_id: USA-OTA90210-DEFAULT  # example; replace with yours
-#    gracenote_postal_code: "90210"
-#    gracenote_country: USA
-```
-1. Set `debug: true` for additional logging.
-2. Omit the Gracenote settings if you do not want guide metadata. The default
-   guide path uses Gracenote's public listings grid and does not require an API
-   license. Open `https://tvlistings.gracenote.com/grid-affiliates.html?aid=orbebb`,
-   select your location and provider, and copy the `lineupId` from the grid URL.
-3. If you already have a licensed Gracenote Video API key, add
-   `gracenote_api_key`; the integration will then use the supported API instead.
-4. Consumer-site credentials can still be supplied as `gracenote_username` and
-   `gracenote_password`. Existing `zapuser` and `zappass` keys remain accepted
-   for compatibility, but the direct public-grid configuration is preferred.
+    debug: false
+    gracenote_lineup_id: YOUR_LINEUP_ID
+    gracenote_postal_code: "YOUR_ZIP_CODE"
+    gracenote_country: USA
 
-`host` is required. The repository's old Zeroconf path was incomplete and used
-an API that is no longer compatible with current `python-zeroconf`.
-
-This works by opening a socket connection to the Tivo device on its default port 31339.  Then using the following protocol, it can perform several commands:
-
-https://www.tivo.com/assets/images/abouttivo/resources/downloads/brochures/TiVo_TCP_Network_Remote_Control_Protocol.pdf
-
-It reads the response and parses that information to determine status. Simply
-connecting without sending a command responds with status such as:
-
-```
-CH_STATUS 0613 LOCAL
+  - platform: tivo
+    host: 192.168.1.102
+    name: Bedroom TiVo Mini
+    unique_id: bedroom_tivo_mini
+    port: 31339
+    debug: false
+    gracenote_lineup_id: YOUR_LINEUP_ID
+    gracenote_postal_code: "YOUR_ZIP_CODE"
+    gracenote_country: USA
 ```
 
-This means channel status, channel 613, and channel was set by the remote.  If we set the channel, it should say REMOTE instead of LOCAL, or RECORDING if a recording is in process.
+Restart Home Assistant after changing the YAML configuration.
 
-Goals:
+### Configuration options
 
+| Option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `host` | Yes | — | TiVo IP address or resolvable hostname. |
+| `name` | No | `Tivo Receiver` | Name displayed in Home Assistant. |
+| `unique_id` | No | Generated from `host` | Stable ID used by Home Assistant's entity registry. An explicit value is recommended. |
+| `port` | No | `31339` | TiVo network remote-control port. |
+| `debug` | No | `false` | Enables additional integration logging. |
+| `gracenote_lineup_id` | No | — | Gracenote lineup used for guide metadata. |
+| `gracenote_postal_code` | With guide data | — | Postal or ZIP code associated with the lineup. Quote numeric ZIP codes. |
+| `gracenote_country` | No | Inferred from lineup | Three-letter country code such as `USA` or `CAN`. |
+| `gracenote_api_key` | No | — | Licensed Gracenote Video API key, if you have one. |
+
+You may omit all `gracenote_*` settings if you only want remote control and do
+not want guide metadata.
+
+## Find your Gracenote lineup ID
+
+No Gracenote account or paid API license is needed for the public guide method.
+
+### Provider lookup method
+
+Open the following URL, replacing `<ZIP_CODE>` with your ZIP code:
+
+```text
+https://tvlistings.gracenote.com/gapzap_webapi/api/Providers/getPostalCodeProviders/USA/<ZIP_CODE>/gapzap/en
 ```
-1. Start recording, end recording
-2. switch and possibly navigate screens
 
-The protocol should be capable of the above but it is unclear to me how to connect that to hass.
+The page returns JSON containing the available television providers. Find the
+entry matching your provider and location, then copy its `lineupId` value. A
+cable provider entry will look similar to this:
+
+```json
+{
+  "name": "Provider - Digital",
+  "location": "Your city",
+  "lineupId": "USA-HEADEND-X",
+  "postalCode": "ZIP_CODE"
+}
 ```
 
-Issues:
+Use that value as `gracenote_lineup_id` and the matching postal code as
+`gracenote_postal_code`.
 
-```
-1. Socket timeout occurs when connecting to a Tivo which is currently playing a recording,
-    etc. (i.e. not in LiveTV mode)  This should be captured now but requires further testing...
-```
+### Listings-page method
 
-More to come...
+Alternatively, open the [Gracenote TV listings
+page](https://tvlistings.gracenote.com/grid-affiliates.html?aid=orbebb), choose
+your location and provider, and inspect the resulting grid URL for its
+`lineupId` value.
+
+Consumer-site usernames and passwords are not licensed Gracenote API keys and
+are not required for the public guide method. The legacy `gracenote_username`,
+`gracenote_password`, `zapuser`, and `zappass` settings remain accepted only for
+compatibility with older configurations.
+
+## Behavior and limitations
+
+- TiVo's protocol reports the current channel during Live TV but does not
+  reliably report playback state or channel status while playing recordings or
+  displaying menus.
+- Play and pause state is tracked for commands sent through Home Assistant.
+  Using the physical remote may not immediately update the Home Assistant icon.
+- During recorded playback, the entity remains online even when the TiVo sends
+  no channel-status response.
+- Gracenote's public listings service is undocumented and could change without
+  notice.
+- Home Assistant exposes one primary media image. The integration prefers
+  current-program artwork, falls back to the channel logo, and finally uses a
+  generic placeholder.
+
+## Troubleshooting
+
+If a TiVo is unavailable or does not respond:
+
+1. Confirm **Network Remote Control** is enabled on that TiVo.
+2. Confirm the configured `host` is still the TiVo's current address.
+3. Confirm Home Assistant can reach TCP port `31339` on the TiVo.
+4. Check that Home Assistant and the TiVo are on networks allowed to communicate
+   with each other.
+5. Set `debug: true`, restart Home Assistant, and inspect the logs for entries
+   from `custom_components.tivo`.
+
+If guide titles or images are missing, verify the lineup ID and postal code by
+opening the provider lookup URL above.
+
+## Protocol and acknowledgements
+
+The integration connects locally on TCP port `31339` and uses the [TiVo TCP
+Network Remote Control
+Protocol](https://www.tivo.com/assets/images/abouttivo/resources/downloads/brochures/TiVo_TCP_Network_Remote_Control_Protocol.pdf).
+
+It builds on work and discussion from:
+
+- [Home Assistant community: Control TiVo box over
+  telnet](https://community.home-assistant.io/t/control-tivo-box-over-telnet/12430/65)
+- [Home Assistant community: TiVo media-player
+  component](https://community.home-assistant.io/t/tivo-media-player-component/851)
+- [TiVo Community: UI control via
+  telnet](https://www.tivocommunity.com/community/index.php?threads/tivo-ui-control-via-telnet-no-hacking-required.392385/)
+- [Charlie Meyer: Remote control of a TiVo from the Linux command
+  line](https://charliemeyer.net/2012/12/04/remote-control-of-a-tivo-from-the-linux-command-line/)
