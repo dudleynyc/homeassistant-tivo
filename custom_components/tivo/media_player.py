@@ -4,6 +4,7 @@ Support for the Tivo receivers.
 For more details about this platform, please refer to the documentation at
 https://home-assistant.io/components/media_player.tivo/
 """
+import asyncio
 from calendar import timegm
 from datetime import datetime, timedelta, timezone
 import json
@@ -54,6 +55,7 @@ GUIDE_SCAN_INTERVAL = timedelta(minutes=5)
 CONNECT_TIMEOUT = 5
 STATUS_RESPONSE_TIMEOUT = 2
 COMMAND_RESPONSE_TIMEOUT = 5
+MAX_RECONNECT_DELAY = 60
 DEFAULT_IMAGE_URL = "https://tvlistings.gracenote.com/assets/images/noImage165x220.jpg"
 
 SUPPORT_TIVO = (
@@ -156,7 +158,7 @@ class TivoDevice(MediaPlayerEntity):
 
         self.guide_client = guide_client
 
-        self._available = True
+        self._available = False
         self._is_standby = False
         # The TCP remote protocol does not expose a general playback-status
         # query. Start in Home Assistant's explicit "on, state unknown" state
@@ -175,6 +177,77 @@ class TivoDevice(MediaPlayerEntity):
         self.sock = None
 
         self.debug = debug
+
+    async def async_added_to_hass(self):
+        """Start listening for TiVo channel-status broadcasts."""
+        await super().async_added_to_hass()
+        listener_task = self.hass.async_create_task(self._async_status_listener())
+        self.async_on_remove(listener_task.cancel)
+
+    async def _async_status_listener(self):
+        """Maintain a connection that receives transient CH_STATUS events."""
+        reconnect_delay = 1
+
+        while True:
+            writer = None
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(self._host, self._port),
+                    timeout=CONNECT_TIMEOUT,
+                )
+                self._available = True
+                self.async_write_ha_state()
+
+                if self.debug:
+                    _LOGGER.debug("Listening for status from %s", self._name)
+
+                while True:
+                    raw_status = await reader.readuntil(b"\r")
+                    status = raw_status.decode(errors="replace").strip()
+                    if not status:
+                        continue
+
+                    words = status.split()
+                    if words[0] != "CH_STATUS":
+                        if self.debug:
+                            _LOGGER.debug(
+                                "Ignoring TiVo status message from %s: %s",
+                                self._name,
+                                status,
+                            )
+                        continue
+
+                    reconnect_delay = 1
+                    self.set_status(words)
+                    self._available = True
+                    self.async_write_ha_state()
+
+            except asyncio.CancelledError:
+                raise
+            except (
+                TimeoutError,
+                OSError,
+                asyncio.IncompleteReadError,
+                asyncio.LimitOverrunError,
+            ) as err:
+                if self.debug:
+                    _LOGGER.debug(
+                        "TiVo status listener disconnected from %s: %s",
+                        self._name,
+                        err,
+                    )
+                self._available = False
+                self.async_write_ha_state()
+            finally:
+                if writer:
+                    writer.close()
+                    try:
+                        await writer.wait_closed()
+                    except OSError:
+                        pass
+
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, MAX_RECONNECT_DELAY)
 
     def update(self):
         """Fetch the current state without blocking Home Assistant's event loop."""
@@ -331,6 +404,11 @@ class TivoDevice(MediaPlayerEntity):
     def available(self):
         """Return whether the TiVo accepted a network connection."""
         return self._available
+
+    @property
+    def should_poll(self):
+        """Use the persistent TiVo status connection instead of polling."""
+        return False
 
     # MediaPlayerEntity properties and methods
     @property
