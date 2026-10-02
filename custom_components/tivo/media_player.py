@@ -245,7 +245,11 @@ class TivoDevice(MediaPlayerEntity):
                 _LOGGER.info("Title:    %s", ti)
 
             self._current["title"] = "Ch. {} {}: {}".format(num, ch, ti)
-            self._current["image"] = self.guide_client.get_image_url(guide_ch)
+            self._current["image"] = (
+                self.guide_client.get_image_url(guide_ch)
+                or self.guide_client.get_logo_url(guide_ch)
+                or self.guide_client.NO_IMAGE_URL
+            )
 
         self._is_standby = False
 
@@ -554,6 +558,7 @@ class GracenoteClient:
         self._channels = {}
         self._titles = {}
         self._images = {}
+        self._logos = {}
 
     def get_callsign(self, ch):
         return self._channels.get(ch)
@@ -563,6 +568,9 @@ class GracenoteClient:
 
     def get_image_url(self, ch):
         return self._images.get(ch)
+
+    def get_logo_url(self, ch):
+        return self._logos.get(ch)
 
     def update(self):
         if self._api_key and self._api_lineup_id:
@@ -734,10 +742,15 @@ class GracenoteClient:
         # Decode basic channel number to channel name from Gracenote data.
         if self.debug:
             _LOGGER.info("Gracenote get_channels called")
+        self._channels = {}
+        self._logos = {}
         for channelData in self._zapraw["channels"]:
             # Pad channel numbers to 4 chars to match values from Tivo device
             _ch = channelData["channelNo"].zfill(4)
             self._channels[_ch] = channelData["callSign"]
+            logo = channelData.get("thumbnail")
+            if logo:
+                self._logos[_ch] = self.image_url(logo)
 
     def get_titles(self):
         # Decode program titles from Gracenote data.
@@ -771,14 +784,15 @@ class GracenoteClient:
             #
             #            pgmtime = ' (' + starthm + ' - ' + endhm + ')'
 
-            image = self.image_url(tmp.get("thumbnail"))
-            self._images[_ch] = image
+            thumbnail = tmp.get("thumbnail")
+            image = self.image_url(thumbnail) if thumbnail else None
 
             now = int(time.time())
             if start_time < now < end_time:
                 title = prog["title"]
                 self._titles[_ch] = title
-                self._images[_ch] = image
+                if image:
+                    self._images[_ch] = image
                 # + pgmtime
 
     def image_url(self, image):
