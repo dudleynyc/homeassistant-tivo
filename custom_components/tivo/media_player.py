@@ -51,6 +51,10 @@ CONF_ZAPPASS = "zappass"
 CONF_DEBUG = "debug"
 
 GUIDE_SCAN_INTERVAL = timedelta(minutes=5)
+CONNECT_TIMEOUT = 5
+STATUS_RESPONSE_TIMEOUT = 2
+COMMAND_RESPONSE_TIMEOUT = 5
+DEFAULT_IMAGE_URL = "https://tvlistings.gracenote.com/assets/images/noImage165x220.jpg"
 
 SUPPORT_TIVO = (
     MediaPlayerEntityFeature.PAUSE
@@ -122,7 +126,10 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         debug,
     )
     known_devices.append(config.get(CONF_HOST))
-    async_add_entities([tivo], True)
+    # Add the entity immediately. Some TiVos do not emit CH_STATUS when a
+    # connection opens, so waiting for an initial poll can delay or prevent
+    # entity registration.
+    async_add_entities([tivo], False)
     hass.data[DATA_TIVO] = known_devices
 
     async def gracenote_update(event_time):
@@ -156,7 +163,14 @@ class TivoDevice(MediaPlayerEntity):
         # until the TiVo reports a live-TV channel or HA sends a playback
         # command.
         self._playback_state = MediaPlayerState.ON
-        self._current = {}
+        # Entity properties can be read before the first successful poll.
+        self._current = {
+            "channel": "no channel",
+            "title": "TiVo state unavailable",
+            "status": "Unknown",
+            "mode": "UNKNOWN",
+            "image": DEFAULT_IMAGE_URL,
+        }
         self._ignore = {}
         self.sock = None
 
@@ -171,7 +185,7 @@ class TivoDevice(MediaPlayerEntity):
             if self.debug:
                 _LOGGER.info("Connecting to device...")
             self.sock = socket.socket()
-            self.sock.settimeout(5)
+            self.sock.settimeout(CONNECT_TIMEOUT)
             self.sock.connect((host, port))
         except Exception:
             raise
@@ -206,9 +220,7 @@ class TivoDevice(MediaPlayerEntity):
         self._current["status"] = "no status"
         self._current["mode"] = "none"
         # returns no image
-        self._current[
-            "image"
-        ] = "https://tvlistings.gracenote.com/assets/images/noImage165x220.jpg"
+        self._current["image"] = DEFAULT_IMAGE_URL
 
         # A TiVo does not send CH_STATUS while playing recorded content or
         # showing some menus. A successful connection only proves that it is
@@ -267,6 +279,9 @@ class TivoDevice(MediaPlayerEntity):
 
         try:
             self.connect(self._host, self._port)
+            self.sock.settimeout(
+                COMMAND_RESPONSE_TIMEOUT if code else STATUS_RESPONSE_TIMEOUT
+            )
             if code:
                 if cmdtype == "":
                     tosend = code + "\r"
@@ -289,10 +304,16 @@ class TivoDevice(MediaPlayerEntity):
                     _LOGGER.warning("Connection timed out...")
                 data = b"no_channel Video"
 
-            self.disconnect()
             return data.decode()
         except Exception:
             return "INVALID CONNECTION"
+        finally:
+            if self.sock:
+                try:
+                    self.disconnect()
+                except OSError:
+                    pass
+                self.sock = None
 
     def channel_scan(self):
         for i in range(1, self._channel_max):
@@ -392,7 +413,7 @@ class TivoDevice(MediaPlayerEntity):
         """Return the content ID of current playing media."""
         if self._is_standby:
             return None
-        return self._current["status"]
+        return self._current.get("status")
 
     @property
     def media_duration(self):
@@ -407,14 +428,14 @@ class TivoDevice(MediaPlayerEntity):
         """Return the title of current playing media."""
         if self._is_standby:
             return None
-        return self._current["title"]
+        return self._current.get("title")
 
     @property
     def media_image_url(self):
         """Return the image url of current playing media."""
         if self._is_standby:
             return None
-        return self._current["image"]
+        return self._current.get("image")
 
     @property
     def media_series_title(self):
@@ -532,9 +553,7 @@ class GracenoteClient:
     BASE_URL = "https://tvlistings.gracenote.com/"
     API_URL = "https://data.tmsapi.com/v1.1/"
     IMAGE_URL = "https://zpmc.tmsimg.com/"
-    NO_IMAGE_URL = (
-        "https://tvlistings.gracenote.com/assets/images/noImage165x220.jpg"
-    )
+    NO_IMAGE_URL = DEFAULT_IMAGE_URL
     USER_AGENT = (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/140.0 Safari/537.36"
