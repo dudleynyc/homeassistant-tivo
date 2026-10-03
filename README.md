@@ -10,20 +10,17 @@ releases. It is not an official Home Assistant or TiVo integration.
 ## Features
 
 - Power, play, pause, and stop controls
-- Channel up and down while watching Live TV
-- Fast-forward and rewind during recorded playback
+- Fast-forward and rewind in Live TV or recorded playback
 - Current channel, callsign, and program title
 - Current-program artwork with the channel logo as a fallback
 - TiVo DVR and TiVo Mini support through the TiVo network remote-control
   protocol
 - Public Gracenote guide lookup without a paid API license
 
-Home Assistant's standard media-player card does not have separate channel and
-fast-forward/rewind buttons. The previous and next buttons are therefore
-context-sensitive:
-
-- Live TV: previous/next changes the channel down/up.
-- Recorded playback: previous/next sends rewind/fast-forward.
+Home Assistant's standard media-player card does not have dedicated
+fast-forward and rewind buttons. The previous and next buttons send TiVo's
+rewind and fast-forward commands. This works with both the Live TV buffer and
+recorded playback. Channel up and down are not exposed on the standard card.
 
 ## Before installing
 
