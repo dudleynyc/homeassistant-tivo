@@ -175,6 +175,9 @@ class TivoDevice(MediaPlayerEntity):
         }
         self._ignore = {}
         self.sock = None
+        self._status_writer = None
+        self._status_writer_ready = asyncio.Event()
+        self._status_writer_lock = asyncio.Lock()
 
         self.debug = debug
 
@@ -200,6 +203,8 @@ class TivoDevice(MediaPlayerEntity):
                     asyncio.open_connection(self._host, self._port),
                     timeout=CONNECT_TIMEOUT,
                 )
+                self._status_writer = writer
+                self._status_writer_ready.set()
                 self._available = True
                 self.async_write_ha_state()
 
@@ -244,6 +249,9 @@ class TivoDevice(MediaPlayerEntity):
                 self._available = False
                 self.async_write_ha_state()
             finally:
+                if self._status_writer is writer:
+                    self._status_writer = None
+                    self._status_writer_ready.clear()
                 if writer:
                     writer.close()
                     try:
@@ -253,6 +261,31 @@ class TivoDevice(MediaPlayerEntity):
 
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, MAX_RECONNECT_DELAY)
+
+    async def _async_send_code(self, code, cmdtype="IRCODE", extra=0):
+        """Send a command over the persistent status connection."""
+        try:
+            await asyncio.wait_for(
+                self._status_writer_ready.wait(), timeout=CONNECT_TIMEOUT
+            )
+            async with self._status_writer_lock:
+                writer = self._status_writer
+                if writer is None or writer.is_closing():
+                    return False
+
+                if extra:
+                    code = f"{code} {extra}"
+                command = f"{cmdtype} {code}\r" if cmdtype else f"{code}\r"
+
+                if self.debug:
+                    _LOGGER.debug("Sending request: '%s'", command)
+
+                writer.write(command.encode())
+                await writer.drain()
+            return True
+        except (TimeoutError, OSError, ConnectionError) as err:
+            _LOGGER.warning("Unable to send command to %s: %s", self._name, err)
+            return False
 
     def update(self):
         """Fetch the current state without blocking Home Assistant's event loop."""
@@ -559,12 +592,26 @@ class TivoDevice(MediaPlayerEntity):
             self._is_standby = False
             self._playback_state = MediaPlayerState.ON
 
+    async def async_turn_on(self):
+        """Turn on the receiver over the persistent connection."""
+        if self._is_standby and await self._async_send_code("STANDBY"):
+            self._is_standby = False
+            self._playback_state = MediaPlayerState.ON
+            self.async_write_ha_state()
+
     def turn_off(self):
         """Turn off the receiver. """
         if self._is_standby == False:
             self.send_code("STANDBY", "IRCODE")
             self.send_code("STANDBY", "IRCODE")
             self._is_standby = True
+
+    async def async_turn_off(self):
+        """Turn off the receiver over the persistent connection."""
+        if not self._is_standby and await self._async_send_code("STANDBY"):
+            await self._async_send_code("STANDBY")
+            self._is_standby = True
+            self.async_write_ha_state()
 
     def media_play(self):
         """Send play command."""
@@ -574,6 +621,15 @@ class TivoDevice(MediaPlayerEntity):
         self.send_code("PLAY")
         self._playback_state = MediaPlayerState.PLAYING
         self.schedule_update_ha_state()
+
+    async def async_media_play(self):
+        """Send play over the connection used by the status listener."""
+        if self._is_standby:
+            return
+
+        if await self._async_send_code("PLAY"):
+            self._playback_state = MediaPlayerState.PLAYING
+            self.async_write_ha_state()
 
     def media_pause(self):
         """Send pause command."""
@@ -586,6 +642,15 @@ class TivoDevice(MediaPlayerEntity):
         self._playback_state = MediaPlayerState.PAUSED
         self.schedule_update_ha_state()
 
+    async def async_media_pause(self):
+        """Send pause over the connection used by the status listener."""
+        if self._is_standby:
+            return
+
+        if await self._async_send_code("PAUSE"):
+            self._playback_state = MediaPlayerState.PAUSED
+            self.async_write_ha_state()
+
     def media_stop(self):
         """Send stop command. """
         if self._is_standby:
@@ -597,6 +662,15 @@ class TivoDevice(MediaPlayerEntity):
         data = self.send_code("STOP", "IRCODE", 0, 0)
         words = data.split()
         return words[2]
+
+    async def async_media_stop(self):
+        """Send stop over the connection used by the status listener."""
+        if self._is_standby or self._current["mode"] == "TV":
+            return
+
+        if await self._async_send_code("STOP"):
+            self._playback_state = MediaPlayerState.ON
+            self.async_write_ha_state()
 
     def media_record(self):
         """ Start recording the current program """
@@ -617,6 +691,18 @@ class TivoDevice(MediaPlayerEntity):
 
         self.get_status()
 
+    async def async_media_previous_track(self):
+        """Send channel down or rewind over the persistent connection."""
+        if self._is_standby:
+            return
+
+        command = (
+            "CHANNELDOWN"
+            if self._current["mode"] in ("TV", "none", "UNKNOWN")
+            else "REVERSE"
+        )
+        await self._async_send_code(command)
+
     def media_next_track(self):
         """Send fast forward command."""
         if self._is_standby:
@@ -628,6 +714,18 @@ class TivoDevice(MediaPlayerEntity):
             self.send_code("FORWARD", "IRCODE", 0, 0)
 
         self.get_status()
+
+    async def async_media_next_track(self):
+        """Send channel up or fast-forward over the persistent connection."""
+        if self._is_standby:
+            return
+
+        command = (
+            "CHANNELUP"
+            if self._current["mode"] in ("TV", "none", "UNKNOWN")
+            else "FORWARD"
+        )
+        await self._async_send_code(command)
 
 
 class GracenoteClient:
