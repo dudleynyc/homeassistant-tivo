@@ -684,48 +684,28 @@ class TivoDevice(MediaPlayerEntity):
         if self._is_standby:
             return
 
-        if self._current["mode"] in ("TV", "none"):
-            self.media_ch_dn()
-        else:
-            self.send_code("REVERSE", "IRCODE", 0, 0)
-
-        self.get_status()
+        self.send_code("REVERSE", "IRCODE", 0, 0)
 
     async def async_media_previous_track(self):
-        """Send channel down or rewind over the persistent connection."""
+        """Send rewind over the persistent connection."""
         if self._is_standby:
             return
 
-        command = (
-            "CHANNELDOWN"
-            if self._current["mode"] in ("TV", "none", "UNKNOWN")
-            else "REVERSE"
-        )
-        await self._async_send_code(command)
+        await self._async_send_code("REVERSE")
 
     def media_next_track(self):
         """Send fast forward command."""
         if self._is_standby:
             return
 
-        if self._current["mode"] in ("TV", "none"):
-            self.media_ch_up()
-        else:
-            self.send_code("FORWARD", "IRCODE", 0, 0)
-
-        self.get_status()
+        self.send_code("FORWARD", "IRCODE", 0, 0)
 
     async def async_media_next_track(self):
-        """Send channel up or fast-forward over the persistent connection."""
+        """Send fast-forward over the persistent connection."""
         if self._is_standby:
             return
 
-        command = (
-            "CHANNELUP"
-            if self._current["mode"] in ("TV", "none", "UNKNOWN")
-            else "FORWARD"
-        )
-        await self._async_send_code(command)
+        await self._async_send_code("FORWARD")
 
 
 class GracenoteClient:
