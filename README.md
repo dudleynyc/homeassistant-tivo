@@ -22,6 +22,12 @@ fast-forward and rewind buttons. The previous and next buttons send TiVo's
 rewind and fast-forward commands. This works with both the Live TV buffer and
 recorded playback. Channel up and down are not exposed on the standard card.
 
+TiVo only reports Live TV channel changes; it does not report when playback
+moves to a recording or menu. To prevent last-known program information from
+remaining visible for days, the integration clears it after four hours without
+a new channel-status message. The entity remains available because the timeout
+does not indicate a network failure.
+
 ## Before installing
 
 Enable **Network Remote Control** on every TiVo you want to add. The exact menu
