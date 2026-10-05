@@ -56,6 +56,7 @@ CONNECT_TIMEOUT = 5
 STATUS_RESPONSE_TIMEOUT = 2
 COMMAND_RESPONSE_TIMEOUT = 5
 MAX_RECONNECT_DELAY = 60
+STATUS_STALE_TIMEOUT = 4 * 60 * 60
 DEFAULT_IMAGE_URL = "https://tvlistings.gracenote.com/assets/images/noImage165x220.jpg"
 
 SUPPORT_TIVO = (
@@ -178,6 +179,7 @@ class TivoDevice(MediaPlayerEntity):
         self._status_writer = None
         self._status_writer_ready = asyncio.Event()
         self._status_writer_lock = asyncio.Lock()
+        self._status_expires_at = None
 
         self.debug = debug
 
@@ -212,7 +214,24 @@ class TivoDevice(MediaPlayerEntity):
                     _LOGGER.debug("Listening for status from %s", self._name)
 
                 while True:
-                    raw_status = await reader.readuntil(b"\r")
+                    timeout = None
+                    if self._status_expires_at is not None:
+                        timeout = max(
+                            0, self._status_expires_at - time.monotonic()
+                        )
+
+                    try:
+                        if timeout is None:
+                            raw_status = await reader.readuntil(b"\r")
+                        else:
+                            raw_status = await asyncio.wait_for(
+                                reader.readuntil(b"\r"), timeout=timeout
+                            )
+                    except TimeoutError:
+                        self._clear_stale_status()
+                        self.async_write_ha_state()
+                        continue
+
                     status = raw_status.decode(errors="replace").strip()
                     if not status:
                         continue
@@ -287,6 +306,23 @@ class TivoDevice(MediaPlayerEntity):
             _LOGGER.warning("Unable to send command to %s: %s", self._name, err)
             return False
 
+    def _clear_stale_status(self):
+        """Clear Live TV details that have not been refreshed for four hours."""
+        if self.debug:
+            _LOGGER.debug("Clearing stale Live TV status for %s", self._name)
+
+        self._current.update(
+            {
+                "channel": None,
+                "title": None,
+                "status": None,
+                "mode": "UNKNOWN",
+                "image": None,
+            }
+        )
+        self._status_expires_at = None
+        self._playback_state = MediaPlayerState.ON
+
     def update(self):
         """Fetch the current state without blocking Home Assistant's event loop."""
         self.get_status()
@@ -340,6 +376,7 @@ class TivoDevice(MediaPlayerEntity):
             self._current["title"] = "TiVo state unavailable"
             self._current["status"] = "Unknown"
             self._current["mode"] = "UNKNOWN"
+            self._status_expires_at = None
             self._playback_state = MediaPlayerState.ON
             return
 
@@ -360,6 +397,7 @@ class TivoDevice(MediaPlayerEntity):
         self._current["title"] = "Ch. {}".format(channel)
         self._current["status"] = status
         self._current["mode"] = "TV"
+        self._status_expires_at = time.monotonic() + STATUS_STALE_TIMEOUT
         self._playback_state = MediaPlayerState.PLAYING
 
         if self.guide_client:
@@ -583,7 +621,11 @@ class TivoDevice(MediaPlayerEntity):
         if self._is_standby:
             return None
 
-        return "{} ({})".format(self._current["status"], self._current["channel"])
+        status = self._current.get("status")
+        channel = self._current.get("channel")
+        if not status or not channel:
+            return None
+        return "{} ({})".format(status, channel)
 
     def turn_on(self):
         """Turn on the receiver. """
